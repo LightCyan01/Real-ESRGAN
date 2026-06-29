@@ -18,6 +18,22 @@
 
 </div>
 
+---
+
+## 🆕 This fork: modernized + native desktop UI
+
+This fork revives Real-ESRGAN for a current (2025+) CUDA stack and adds a native video-upscaler app:
+
+- **Runs on a modern stack**: `uv` + `pyproject.toml`, Python 3.11, CUDA PyTorch 2.x, `numpy<2`, plus a `torchvision.functional_tensor` shim and `weights_only`-safe loading so the 2022 dependencies install and import again.
+- **Opt-in, quality-gated speed**: `--compile` / `--channels_last` / `--cudnn_benchmark` (and `--compile_mode reduce-overhead` for CUDA graphs) give ~1.5–2× on fixed-size frames; off by default, verify with `scripts/check_fp16_parity.py`.
+- **Robust batch upscaling**: resumable, fail-loud, lossless folder runs.
+- **More models**: `--gfpgan_version 1.4`, and `--use_spandrel --model_path <file>` to load community [OpenModelDB](https://openmodeldb.info) models (ESRGAN/RRDBNet/Compact/SPAN/PLKSR/HAT/DAT…).
+- **Native desktop UI (`ui/`)**: drag in clips, an original/upscaled compare slider, and live logs; runs the full ffmpeg extract → upscale → merge pipeline with audio passthrough, optional pre-denoise + deflicker, fast mode, and a custom-model picker. Launch with **`Open Real-ESRGAN UI.bat`** (auto-creates the env) or `uv run python ui/app.py`. See [`ui/README.md`](ui/README.md).
+
+More detail: [`docs/video_pipeline.md`](docs/video_pipeline.md) and [`docs/model_selection.md`](docs/model_selection.md).
+
+---
+
 🔥 **AnimeVideo-v3 model (动漫视频小模型)**. Please see [[*anime video models*](docs/anime_video_model.md)] and [[*comparisons*](docs/anime_comparisons.md)]<br>
 🔥 **RealESRGAN_x4plus_anime_6B** for anime images **(动漫插图模型)**. Please see [[*anime_model*](docs/anime_model.md)]
 
@@ -86,8 +102,11 @@ Other recommended projects:<br>
 
 ## 🔧 Dependencies and Installation
 
-- Python >= 3.7 (Recommend to use [Anaconda](https://www.anaconda.com/download/#linux) or [Miniconda](https://docs.conda.io/en/latest/miniconda.html))
-- [PyTorch >= 1.7](https://pytorch.org/)
+Supported environment (tested): **Python 3.11**, an NVIDIA GPU with **CUDA 12.x**
+PyTorch wheels, installed via [`uv`](https://docs.astral.sh/uv/). Older Python +
+CPU-only stacks no longer install cleanly because upstream `basicsr`/`gfpgan`
+still import `torchvision.transforms.functional_tensor`, which torchvision removed
+in 0.17 (a compatibility shim is bundled, but the CUDA wheels are the supported path).
 
 ### Installation
 
@@ -98,18 +117,21 @@ Other recommended projects:<br>
     cd Real-ESRGAN
     ```
 
-1. Install dependent packages
+1. Install dependent packages with `uv`
+
+    Install order matters: `torch` must be present before `basicsr`/`facexlib`/`gfpgan`
+    build, because their `setup.py` imports torch (build isolation is disabled for them
+    in `pyproject.toml`).
 
     ```bash
-    # Install basicsr - https://github.com/xinntao/BasicSR
-    # We use BasicSR for both training and inference
-    pip install basicsr
-    # facexlib and gfpgan are for face enhancement
-    pip install facexlib
-    pip install gfpgan
-    pip install -r requirements.txt
-    python setup.py develop
+    uv venv --python 3.11
+    uv pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
+    uv pip install "numpy<2" opencv-python Pillow tqdm cython
+    uv pip install "basicsr>=1.4.2" facexlib gfpgan --no-build-isolation
+    uv pip install -e . --no-build-isolation
     ```
+
+    Then run any inference command with `uv run python inference_realesrgan.py ...`.
 
 ---
 
@@ -172,6 +194,12 @@ Usage: realesrgan-ncnn-vulkan.exe -i infile -o outfile [options]...
 Note that it may introduce block inconsistency (and also generate slightly different results from the PyTorch implementation), because this executable file first crops the input image into several tiles, and then processes them separately, finally stitches together.
 
 ### Python script
+
+> For upscaling **video** losslessly (extract → upscale → merge with correct color
+> handling), see [docs/video_pipeline.md](docs/video_pipeline.md).
+>
+> For choosing a model per content type and avoiding per-frame video flicker, see
+> [docs/model_selection.md](docs/model_selection.md).
 
 #### Usage of python script
 

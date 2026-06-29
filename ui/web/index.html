@@ -1,0 +1,721 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Real-ESRGAN Upscaler</title>
+<style>
+  :root {
+    --bg: #0a0e14; --panel: #11161f; --surface: #161c27; --border: #232b39;
+    --fg: #e6edf3; --muted: #8b97a7; --muted2: #5b6573;
+    --cyan: #2dd4bf; --cyan-dim: #134e4a; --primary: #38bdf8; --danger: #f87171;
+    --ok: #34d399; --radius: 8px;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: var(--bg); color: var(--fg); font: 13px/1.4 ui-sans-serif, system-ui, sans-serif;
+    overflow: hidden; user-select: none;
+  }
+  .mono { font-family: ui-monospace, "Cascadia Code", Consolas, monospace; }
+  button { font: inherit; color: inherit; cursor: pointer; background: none; border: none; }
+  .app { display: flex; flex-direction: column; height: 100vh; }
+
+  /* top bar */
+  header {
+    display: flex; align-items: center; gap: 10px; padding: 8px 12px;
+    background: var(--panel); border-bottom: 1px solid var(--border); flex-shrink: 0;
+  }
+  .brand { font-weight: 600; letter-spacing: .5px; margin-right: 6px; }
+  .brand b { color: var(--cyan); }
+  .pathbtn {
+    display: flex; flex-direction: column; align-items: flex-start; gap: 1px;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
+    padding: 4px 10px; min-width: 150px; max-width: 240px;
+  }
+  .pathbtn:hover { border-color: var(--primary); }
+  .pathbtn .lbl { font-size: 8px; letter-spacing: 1.5px; text-transform: uppercase; color: var(--muted2); }
+  .pathbtn .val { font-size: 11px; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pathbtn .val.empty { color: var(--muted2); }
+  .spacer { flex: 1; }
+  .btn {
+    padding: 7px 16px; border-radius: 6px; border: 1px solid var(--border);
+    background: var(--surface); font-weight: 600;
+  }
+  .btn:hover { border-color: var(--muted); }
+  .btn.primary { background: var(--cyan); color: #04201c; border-color: var(--cyan); }
+  .btn.primary:disabled { opacity: .4; cursor: not-allowed; }
+  .btn.danger { background: var(--danger); color: #2a0a0a; border-color: var(--danger); }
+  .status { font-size: 11px; color: var(--muted); min-width: 120px; text-align: right; }
+  .status.ok { color: var(--ok); } .status.error { color: var(--danger); }
+
+  /* main grid */
+  .main { flex: 1; display: grid; grid-template-columns: 280px minmax(0, 1fr) 250px; min-height: 0; }
+  .col { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+  .col.bin { border-right: 1px solid var(--border); background: var(--panel); }
+  .col.opts { border-left: 1px solid var(--border); background: var(--panel); overflow-y: auto; }
+  .col-head {
+    padding: 8px 12px; font-size: 11px; letter-spacing: 1.5px; text-transform: uppercase;
+    color: var(--muted); border-bottom: 1px solid var(--border); display: flex; justify-content: space-between;
+  }
+
+  /* bin */
+  .bin-body { flex: 1; overflow-y: auto; padding: 0; position: relative; }
+  .bin-body.over { outline: 1px dashed var(--cyan); outline-offset: -6px; }
+  .dropzone {
+    height: 100%; min-height: 150px; border: 1px dashed var(--border); border-radius: 0;
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px;
+    color: var(--muted2); text-align: center;
+  }
+  .dropzone:hover, .dropzone.over { border-color: var(--cyan); color: var(--cyan); }
+  .clips { display: flex; flex-direction: column; }
+  .clip {
+    position: relative; display: grid; grid-template-columns: 62px minmax(0, 1fr) 22px; gap: 8px;
+    align-items: center; min-height: 52px; padding: 7px 8px; border-bottom: 1px solid var(--border);
+    background: var(--panel);
+  }
+  .clip:hover { background: var(--surface); }
+  .clip.sel { background: #0d1720; box-shadow: inset 3px 0 0 var(--cyan); }
+  .clip .thumb {
+    width: 58px; aspect-ratio: 16/9; display: flex; align-items: center; justify-content: center;
+    background: #0c1118; color: var(--muted2); font-size: 16px; overflow: hidden;
+    border: 1px solid #1f2937;
+  }
+  .clip .thumb video { width: 100%; height: 100%; object-fit: cover; display: block; background: #000; pointer-events: none; }
+  .clip.sel .thumb { border-color: var(--cyan); color: var(--cyan); }
+  .clip .meta { min-width: 0; }
+  .clip .nm { font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .clip .st { font-size: 9px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .clip .st.done { color: var(--ok); } .clip .st.error { color: var(--danger); } .clip .st.proc { color: var(--cyan); }
+  .clip .bar { position: absolute; left: 0; right: 0; bottom: 0; height: 2px; background: #0c1118; }
+  .clip .bar > i { display: block; height: 100%; background: var(--cyan); width: 0; transition: width .2s; }
+  .clip .rm {
+    width: 18px; height: 18px; border-radius: 4px; color: var(--muted);
+    display: flex; align-items: center; justify-content: center; opacity: .55; font-size: 12px;
+  }
+  .clip:hover .rm { opacity: 1; } .clip .rm:hover { background: var(--danger); color: #2a0a0a; }
+
+  /* player */
+  .col.player { background: #060a0f; }
+  .modes { display: flex; gap: 4px; }
+  .modes button { padding: 3px 10px; font-size: 10px; border-radius: 5px; border: 1px solid var(--border); color: var(--muted); }
+  .modes button.on { background: var(--cyan-dim); color: var(--cyan); border-color: var(--cyan); }
+  .modes button:disabled { opacity: .35; cursor: not-allowed; }
+  .stage { flex: 1; position: relative; display: flex; align-items: center; justify-content: center; padding: 10px; min-height: 0; }
+  .frame { position: relative; width: 100%; height: 100%;
+           background: #000; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+  .frame video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #000; }
+  #vUpsc { display: none; }
+  .divider { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--cyan); display: none; pointer-events: none; }
+  .divider .grip {
+    position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%); width: 26px; height: 26px;
+    border-radius: 50%; background: var(--cyan); color: #04201c; display: flex; align-items: center; justify-content: center;
+    font-size: 12px; pointer-events: auto; cursor: col-resize; box-shadow: 0 2px 8px rgba(0,0,0,.5);
+  }
+  .tag { position: absolute; top: 8px; font-size: 9px; letter-spacing: 1px; text-transform: uppercase;
+         background: rgba(0,0,0,.6); padding: 2px 6px; border-radius: 4px; color: var(--muted); display: none; }
+  .tag.l { left: 8px; } .tag.r { right: 8px; color: var(--cyan); }
+  .empty-player { color: var(--muted2); text-align: center; }
+  .controls { display: flex; align-items: center; gap: 10px; padding: 8px 14px; border-top: 1px solid var(--border); background: var(--panel); }
+  .controls input[type=range].seek { flex: 1; accent-color: var(--cyan); }
+  .controls .t { font-size: 10px; color: var(--muted); min-width: 80px; }
+  .iconbtn { width: 30px; height: 30px; border-radius: 6px; border: 1px solid var(--border); display:flex; align-items:center; justify-content:center; }
+  .iconbtn:hover { border-color: var(--muted); }
+
+  /* options */
+  .section { border-bottom: 1px solid var(--border); padding: 10px 12px; }
+  .section h4 { margin: 0 0 8px; font-size: 10px; letter-spacing: 1.5px; text-transform: uppercase; color: var(--muted); }
+  .row { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
+  .row:last-child { margin-bottom: 0; }
+  .row label { font-size: 10px; color: var(--muted); }
+  select, input[type=text], input[type=number] {
+    width: 100%; background: var(--bg); border: 1px solid var(--border); border-radius: 5px;
+    padding: 6px 8px; color: var(--fg); font: inherit;
+  }
+  select:focus, input:focus { outline: none; border-color: var(--primary); }
+  .scales { display: grid; grid-template-columns: repeat(4,1fr); gap: 4px; }
+  .scales button { padding: 5px 0; border: 1px solid var(--border); border-radius: 5px; font-size: 11px; color: var(--muted); }
+  .scales button.on { background: var(--cyan-dim); color: var(--cyan); border-color: var(--cyan); }
+  .slider { display: flex; align-items: center; gap: 8px; }
+  .slider input { flex: 1; accent-color: var(--cyan); }
+  .slider .v { font-size: 10px; color: var(--muted); width: 34px; text-align: right; }
+  .toggle { display: flex; align-items: center; justify-content: space-between; cursor: pointer; padding: 3px 0; }
+  .toggle span { font-size: 11px; color: var(--muted); }
+  .sw { width: 34px; height: 18px; border-radius: 10px; background: var(--border); position: relative; transition: .15s; flex-shrink: 0; }
+  .sw::after { content:""; position:absolute; top:2px; left:2px; width:14px; height:14px; border-radius:50%; background: var(--fg); transition:.15s; }
+  .toggle.on .sw { background: var(--cyan); } .toggle.on .sw::after { transform: translateX(16px); }
+  .folder { display: flex; gap: 4px; }
+  .folder input { flex: 1; }
+  .folder button { width: 30px; border: 1px solid var(--border); border-radius: 5px; color: var(--muted); }
+  .folder button:hover { color: var(--fg); border-color: var(--muted); }
+  /* log console */
+  .logwrap { flex-shrink: 0; background: #06090d; border-top: 1px solid var(--border); display: flex; flex-direction: column; }
+  .logbar { display: flex; align-items: center; justify-content: space-between; padding: 4px 12px; font-size: 10px; color: var(--muted); cursor: pointer; user-select: none; }
+  .logbar:hover { color: var(--fg); }
+  .log-actions { display: flex; align-items: center; gap: 12px; }
+  .copylog { color: var(--muted); border: 1px solid var(--border); border-radius: 4px; padding: 2px 7px; font-size: 10px; }
+  .copylog:hover { color: var(--fg); border-color: var(--muted); }
+  .logbody { display: none; margin: 0; height: 170px; overflow: auto; padding: 6px 12px; border-top: 1px solid var(--border);
+             font: 11px/1.45 ui-monospace, Consolas, monospace; color: #b7c2d0; white-space: pre-wrap; word-break: break-all;
+             cursor: text; user-select: text; -webkit-user-select: text; }
+  .logwrap.open .logbody { display: block; }
+  footer { padding: 5px 12px; font-size: 10px; color: var(--muted2); border-top: 1px solid var(--border); background: var(--panel); display:flex; justify-content:space-between; }
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <span class="brand mono">Real-ESRGAN <b>Upscaler</b></span>
+    <button class="pathbtn" id="btnInput">
+      <span class="lbl mono">Input</span><span class="val empty mono" id="inputVal">Choose video(s)…</span>
+    </button>
+    <button class="pathbtn" id="btnOutput">
+      <span class="lbl mono">Output</span><span class="val empty mono" id="outputVal">Choose output folder…</span>
+    </button>
+    <div class="spacer"></div>
+    <span class="status mono" id="status"></span>
+    <button class="btn primary" id="btnStart" disabled>Start</button>
+    <button class="btn danger" id="btnStop" style="display:none">Stop</button>
+  </header>
+
+  <div class="main">
+    <!-- BIN -->
+    <div class="col bin">
+      <div class="col-head"><span>Project Bin</span><span id="binCount" class="mono">0 clips</span></div>
+      <div class="bin-body" id="binBody"></div>
+    </div>
+
+    <!-- PLAYER -->
+    <div class="col player">
+      <div class="col-head">
+        <div class="modes">
+          <button data-mode="original" class="on" id="mOriginal">Original</button>
+          <button data-mode="upscaled" id="mUpscaled" disabled>Upscaled</button>
+          <button data-mode="compare" id="mCompare" disabled>Compare</button>
+        </div>
+        <span id="playerName" class="mono"></span>
+      </div>
+      <div class="stage" id="stage">
+        <div class="empty-player mono" id="emptyPlayer">Select a clip from the bin</div>
+        <div class="frame" id="frame" style="display:none">
+          <video id="vOrig" preload="auto"></video>
+          <video id="vUpsc" preload="auto" muted></video>
+          <span class="tag l" id="tagL">Original</span>
+          <span class="tag r" id="tagR">Upscaled</span>
+          <div class="divider" id="divider"><div class="grip">⇆</div></div>
+        </div>
+      </div>
+      <div class="controls" id="controls" style="display:none">
+        <button class="iconbtn" id="playBtn">▶</button>
+        <span class="t mono" id="time">0:00 / 0:00</span>
+        <input type="range" class="seek" id="seek" min="0" max="1000" value="0" />
+        <button class="iconbtn" id="muteBtn">🔊</button>
+      </div>
+    </div>
+
+    <!-- OPTIONS -->
+    <div class="col opts">
+      <div class="col-head"><span>Options</span></div>
+
+      <div class="section">
+        <h4>Model</h4>
+        <div class="row">
+          <label>Model</label>
+          <select id="optModel">
+            <option value="realesr-animevideov3">AnimeVideo v3 (anime/cartoon)</option>
+            <option value="realesr-general-x4v3">General x4 v3 (real, denoise)</option>
+            <option value="RealESRGAN_x4plus">x4plus (general)</option>
+            <option value="RealESRGAN_x4plus_anime_6B">x4plus Anime 6B</option>
+            <option value="RealESRNet_x4plus">ESRNet x4plus</option>
+          </select>
+        </div>
+        <div class="row">
+          <label>Custom model (spandrel) <span id="customName" class="mono" style="color:var(--cyan)"></span></label>
+          <div class="folder">
+            <button id="btnModel" style="flex:1;padding:6px 8px;border:1px solid var(--border);border-radius:5px;color:var(--muted);font-size:11px;text-align:left">Choose .pth / .safetensors…</button>
+            <button id="clearModel" title="Use the built-in model" style="width:30px;border:1px solid var(--border);border-radius:5px;color:var(--muted)">x</button>
+          </div>
+        </div>
+        <div class="row">
+          <label>Output scale</label>
+          <div class="scales" id="optScale">
+            <button data-s="2">2x</button><button data-s="3">3x</button>
+            <button data-s="4" class="on">4x</button><button data-s="8">8x</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="section">
+        <h4>Processing</h4>
+        <div class="row">
+          <label>Tile size: <span id="tileVal" class="mono">Auto</span></label>
+          <div class="slider"><input type="range" id="optTile" min="0" max="512" step="32" value="0" /></div>
+        </div>
+        <div class="row" id="denoiseRow">
+          <label>Denoise strength: <span id="denoiseVal" class="mono">0.50</span></label>
+          <div class="slider"><input type="range" id="optDenoise" min="0" max="1" step="0.05" value="0.5" /></div>
+        </div>
+        <div class="row"><label>GPU ID</label><input type="number" id="optGpu" min="0" max="7" value="0" /></div>
+        <div class="toggle" id="tFace"><span>Face enhancement (GFPGAN)</span><div class="sw"></div></div>
+        <div class="toggle" id="tFp32"><span>FP32 (slower, exact)</span><div class="sw"></div></div>
+        <div class="toggle" id="tFast"><span>Fast mode (torch.compile, ~1.5–2×)</span><div class="sw"></div></div>
+        <div class="toggle" id="tDenoise"><span>Pre-denoise (reduce shimmer)</span><div class="sw"></div></div>
+        <div class="toggle" id="tDeflicker"><span>Deflicker output</span><div class="sw"></div></div>
+      </div>
+
+      <div class="section">
+        <h4>Output</h4>
+        <div class="row"><label>Suffix</label><input type="text" id="optSuffix" value="upscaled" /></div>
+        <div class="row">
+          <label>Format</label>
+          <select id="optFormat">
+            <option value="mp4">mp4</option><option value="mkv">mkv</option>
+            <option value="mov">mov</option><option value="avi">avi</option><option value="webm">webm (VP9)</option>
+          </select>
+        </div>
+        <div class="toggle on" id="tAudio"><span>Include audio</span><div class="sw"></div></div>
+      </div>
+
+      <div class="section">
+        <h4>Frames</h4>
+        <div class="row">
+          <label>Temp frames dir (blank = system temp)</label>
+          <div class="folder"><input type="text" id="optTemp" placeholder="System temp" /><button data-pick="optTemp">📁</button></div>
+        </div>
+        <div class="row">
+          <label>Upscaled frames dir (blank = system temp)</label>
+          <div class="folder"><input type="text" id="optOut" placeholder="System temp" /><button data-pick="optOut">📁</button></div>
+        </div>
+        <div class="toggle on" id="tCleanup"><span>Clean up frames after merge</span><div class="sw"></div></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="logwrap" id="logwrap">
+    <div class="logbar" id="logbar"><span class="mono">▸ Logs</span><span class="log-actions"><button class="copylog mono" id="copyLog">Copy</button><span class="mono" style="opacity:.6">click to toggle</span></span></div>
+    <pre class="logbody" id="logbody"></pre>
+  </div>
+
+  <footer>
+    <span class="mono">CUDA / PyTorch backend</span>
+    <span class="mono" id="cli"></span>
+  </footer>
+</div>
+
+<script>
+"use strict";
+const $ = (s) => document.querySelector(s);
+const api = () => (window.pywebview && window.pywebview.api) || null;
+const SETTINGS_KEY = "realesrgan-ui-settings-v1";
+
+const state = {
+  videos: [],          // {id,path,name,size,url,status,progress,stage,outputUrl}
+  selectedId: null,
+  outputDir: "",
+  mode: "original",
+  sliderPos: 50,
+  processing: false,
+  batchIds: new Set(),
+  cancelling: false,
+  customModel: null,   // {path,name} when a spandrel model file is chosen
+};
+let idSeq = 1;
+
+/* ---------- bin ---------- */
+function fmtSize(b) { return b > 1048576 ? (b/1048576).toFixed(1)+" MB" : (b/1024).toFixed(0)+" KB"; }
+
+function addVideos(items) {
+  if (!items || !items.length) return;
+  const existing = new Set(state.videos.map(v => v.path));
+  for (const it of items) {
+    if (existing.has(it.path)) continue;
+    state.videos.push({ id: "v"+(idSeq++), path: it.path, name: it.name, size: it.size,
+                        url: it.url, status: "queued", progress: 0, stage: "", outputUrl: null });
+  }
+  if (!state.selectedId && state.videos.length) state.selectedId = state.videos[0].id;
+  renderBin(); renderPlayer(); updateStart();
+}
+
+function removeVideo(id) {
+  state.videos = state.videos.filter(v => v.id !== id);
+  if (state.selectedId === id) state.selectedId = state.videos[0]?.id || null;
+  renderBin(); renderPlayer(); updateStart();
+}
+
+function statusGlyph(s) { return s==="done"?"✓":s==="error"?"⚠":s==="processing"?"●":"○"; }
+function esc(s) { return String(s ?? "").replace(/[&<>"']/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c])); }
+
+function renderBin() {
+  const body = $("#binBody");
+  $("#binCount").textContent = state.videos.length + " clip" + (state.videos.length!==1?"s":"");
+  if (!state.videos.length) {
+    body.innerHTML = '<div class="dropzone" id="dz"><div style="font-size:28px">🎬</div>'
+      + '<div class="mono">Click to add videos</div><div class="mono" style="font-size:10px;opacity:.6">or drop files here</div></div>';
+    $("#dz").onclick = pickVideos;
+    return;
+  }
+  let html = '<div class="clips">';
+  for (const v of state.videos) {
+    const stCls = v.status==="done"?"done":v.status==="error"?"error":v.status==="processing"?"proc":"";
+    const sub = v.status==="processing" ? (v.stage||"…")+" "+(v.progress||0)+"%"
+              : v.status==="error" ? "failed - see logs" : v.status;
+    html += `<div class="clip ${v.id===state.selectedId?'sel':''}" data-id="${v.id}">
+      <div class="thumb">${v.url ? `<video src="${v.url}#t=0.1" muted preload="metadata"></video>` : "▶"}</div>
+      <div class="meta"><div class="nm mono" title="${esc(v.name)}">${esc(v.name)}</div>
+        <div class="st ${stCls} mono">${statusGlyph(v.status)} ${esc(sub)}</div></div>
+      <div class="rm" data-rm="${v.id}">x</div>
+      <div class="bar"><i style="width:${v.status==='done'?100:(v.progress||0)}%"></i></div>
+    </div>`;
+  }
+  html += '</div>';
+  body.innerHTML = html;
+  body.querySelectorAll(".clip").forEach(el => {
+    el.onclick = (e) => { if (e.target.dataset.rm) return; selectVideo(el.dataset.id); };
+  });
+  body.querySelectorAll("[data-rm]").forEach(el => el.onclick = (e) => { e.stopPropagation(); removeVideo(el.dataset.rm); });
+}
+
+function selectVideo(id) { state.selectedId = id; renderBin(); renderPlayer(); }
+
+/* ---------- player ---------- */
+const vOrig = $("#vOrig"), vUpsc = $("#vUpsc");
+
+function selected() { return state.videos.find(v => v.id === state.selectedId) || null; }
+
+function setVideoSrc(el, url) {
+  if (!url || el.dataset.src === url) return;
+  el.src = url;
+  el.dataset.src = url;
+  el.load();
+}
+
+function syncUpscaledTime() {
+  if (!selected()?.outputUrl || !Number.isFinite(vOrig.currentTime)) return;
+  const t = Number.isFinite(vUpsc.duration) ? Math.min(vOrig.currentTime || 0, vUpsc.duration) : (vOrig.currentTime || 0);
+  try {
+    if (vUpsc.readyState >= 1 && Math.abs((vUpsc.currentTime || 0) - t) > 0.05) vUpsc.currentTime = t;
+  } catch {}
+}
+
+function renderPlayer() {
+  const v = selected();
+  const has = !!v;
+  $("#emptyPlayer").style.display = has ? "none" : "block";
+  $("#frame").style.display = has ? "block" : "none";
+  $("#controls").style.display = has ? "flex" : "none";
+  $("#playerName").textContent = v ? v.name : "";
+  const hasUp = !!(v && v.outputUrl);
+  $("#mUpscaled").disabled = !hasUp; $("#mCompare").disabled = !hasUp;
+  if (!has) { vOrig.removeAttribute("src"); vUpsc.removeAttribute("src"); return; }
+  setVideoSrc(vOrig, v.url);
+  if (hasUp) setVideoSrc(vUpsc, v.outputUrl);
+  if (!hasUp && state.mode !== "original") setMode("original");
+  applyMode();
+}
+
+function setMode(m) {
+  if ((m==="upscaled"||m==="compare") && !(selected() && selected().outputUrl)) return;
+  state.mode = m;
+  document.querySelectorAll(".modes button").forEach(b => b.classList.toggle("on", b.dataset.mode===m));
+  applyMode();
+}
+
+function applyMode() {
+  const m = state.mode, p = state.sliderPos;
+  syncUpscaledTime();
+  vUpsc.style.display = (m==="original") ? "none" : "block";
+  $("#divider").style.display = (m==="compare") ? "block" : "none";
+  $("#tagL").style.display = $("#tagR").style.display = (m==="compare") ? "block" : "none";
+  if (m==="compare") {
+    vOrig.style.clipPath = `inset(0 ${100-p}% 0 0)`;
+    vUpsc.style.clipPath = `inset(0 0 0 ${p}%)`;
+    $("#divider").style.left = p + "%";
+  } else {
+    vOrig.style.clipPath = "none"; vUpsc.style.clipPath = "none";
+  }
+}
+
+// comparison slider drag
+(function () {
+  let dragging = false;
+  const frame = $("#frame");
+  const move = (clientX) => {
+    const r = frame.getBoundingClientRect();
+    state.sliderPos = Math.max(0, Math.min(100, ((clientX - r.left) / r.width) * 100));
+    applyMode();
+  };
+  $("#divider").addEventListener("mousedown", (e) => { dragging = true; e.preventDefault(); });
+  window.addEventListener("mousemove", (e) => { if (dragging) move(e.clientX); });
+  window.addEventListener("mouseup", () => dragging = false);
+})();
+
+// playback (sync upscaled to original)
+const playBtn = $("#playBtn"), seek = $("#seek"), timeEl = $("#time");
+function fmtT(s) { s = s||0; const m = Math.floor(s/60), x = Math.floor(s%60); return m+":"+String(x).padStart(2,"0"); }
+playBtn.onclick = () => {
+  if (vOrig.paused) { vOrig.play(); if (state.mode!=="original" && selected()?.outputUrl) vUpsc.play(); playBtn.textContent="❚❚"; }
+  else { vOrig.pause(); vUpsc.pause(); playBtn.textContent="▶"; }
+};
+$("#muteBtn").onclick = () => { vOrig.muted = !vOrig.muted; $("#muteBtn").textContent = vOrig.muted ? "🔇" : "🔊"; };
+vOrig.addEventListener("timeupdate", () => {
+  if (vOrig.duration) { seek.value = (vOrig.currentTime/vOrig.duration)*1000; timeEl.textContent = fmtT(vOrig.currentTime)+" / "+fmtT(vOrig.duration); }
+  if (selected()?.outputUrl && Math.abs(vUpsc.currentTime - vOrig.currentTime) > 0.3) vUpsc.currentTime = vOrig.currentTime;
+});
+vOrig.addEventListener("seeked", syncUpscaledTime);
+vUpsc.addEventListener("loadedmetadata", syncUpscaledTime);
+vUpsc.addEventListener("loadeddata", syncUpscaledTime);
+vOrig.addEventListener("ended", () => playBtn.textContent="▶");
+seek.oninput = () => { if (vOrig.duration) { const t=(seek.value/1000)*vOrig.duration; vOrig.currentTime=t; vUpsc.currentTime=t; } };
+
+/* ---------- pickers ---------- */
+async function pickVideos() { const a = api(); if (!a) return; const items = await a.pick_videos(); addVideos(items); }
+async function pickOutput() {
+  const a = api(); if (!a) return; const p = await a.pick_folder();
+  if (p) { state.outputDir = p; $("#outputVal").textContent = p; $("#outputVal").classList.remove("empty"); updateStart(); saveSettings(); }
+}
+$("#btnInput").onclick = pickVideos;
+$("#btnOutput").onclick = pickOutput;
+document.querySelectorAll("[data-pick]").forEach(b => b.onclick = async () => {
+  const a = api(); if (!a) return; const p = await a.pick_folder(); if (p) { $("#"+b.dataset.pick).value = p; saveSettings(); }
+});
+
+// Python's pywebview drop handler receives full paths. JS only owns hover state.
+(function () {
+  const stop = (e) => { e.preventDefault(); e.stopPropagation(); };
+  const dz = () => $("#binBody").querySelector(".dropzone");
+  ["dragenter","dragover"].forEach(ev => $("#binBody").addEventListener(ev, (e) => { stop(e); dz()?.classList.add("over"); $("#binBody").classList.add("over"); }));
+  $("#binBody").addEventListener("dragleave", (e) => { stop(e); dz()?.classList.remove("over"); $("#binBody").classList.remove("over"); });
+  $("#binBody").addEventListener("drop", async (e) => {
+    stop(e); dz()?.classList.remove("over"); $("#binBody").classList.remove("over");
+  });
+})();
+
+/* ---------- options + start ---------- */
+document.querySelectorAll("#optScale button").forEach(b => b.onclick = () => {
+  document.querySelectorAll("#optScale button").forEach(x => x.classList.remove("on")); b.classList.add("on"); updateCli(); saveSettings();
+});
+const toggle = (id) => { const el = $(id); el.onclick = () => { el.classList.toggle("on"); updateCli(); saveSettings(); }; };
+["#tFace","#tFp32","#tFast","#tDenoise","#tDeflicker","#tAudio","#tCleanup"].forEach(toggle);
+$("#optTile").oninput = (e) => { $("#tileVal").textContent = e.target.value==="0" ? "Auto" : e.target.value; updateCli(); saveSettings(); };
+$("#optDenoise").oninput = (e) => { $("#denoiseVal").textContent = (+e.target.value).toFixed(2); saveSettings(); };
+$("#optModel").onchange = () => { $("#denoiseRow").style.opacity = $("#optModel").value==="realesr-general-x4v3" ? "1":".4"; updateCli(); saveSettings(); };
+$("#optFormat").onchange = () => { updateCli(); saveSettings(); };
+$("#optSuffix").oninput = () => { updateCli(); saveSettings(); };
+["#optGpu","#optTemp","#optOut"].forEach(id => $(id).oninput = () => { updateCli(); saveSettings(); });
+
+// custom (spandrel) model picker
+$("#btnModel").onclick = async () => {
+  const a = api(); if (!a || !a.pick_model) return;
+  const m = await a.pick_model();
+  if (m) { state.customModel = m; $("#customName").textContent = "· " + m.name; updateCli(); saveSettings(); }
+};
+$("#clearModel").onclick = () => { state.customModel = null; $("#customName").textContent = ""; updateCli(); saveSettings(); };
+
+function gatherOptions() {
+  const on = (id) => $(id).classList.contains("on");
+  return {
+    model: $("#optModel").value,
+    scale: +document.querySelector("#optScale button.on").dataset.s,
+    tile: +$("#optTile").value,
+    denoise: +$("#optDenoise").value,
+    face_enhance: on("#tFace"),
+    fp32: on("#tFp32"),
+    gpu_id: +$("#optGpu").value,
+    include_audio: on("#tAudio"),
+    cleanup: on("#tCleanup"),
+    output_format: $("#optFormat").value,
+    suffix: $("#optSuffix").value,
+    output_dir: state.outputDir,
+    temp_frames_dir: $("#optTemp").value.trim(),
+    out_frames_dir: $("#optOut").value.trim(),
+    fast: on("#tFast"),
+    model_path: state.customModel?.path || "",
+    denoise_temporal: on("#tDenoise"),
+    deflicker: on("#tDeflicker"),
+  };
+}
+
+function updateCli() {
+  const o = gatherOptions();
+  const p = [`inference_realesrgan.py`];
+  if (o.model_path) p.push(`--use_spandrel --model_path "${o.model_path.split(/[\\/]/).pop()}"`);
+  else p.push(`-n ${o.model}`);
+  p.push(`-i frames -o out_frames`, `-s ${o.scale}`, `--ext png`);
+  if (o.tile>0) p.push(`--tile ${o.tile}`);
+  if (!o.model_path && o.model==="realesr-general-x4v3") p.push(`-dn ${o.denoise}`);
+  if (o.face_enhance) p.push(`--face_enhance`);
+  if (o.fp32) p.push(`--fp32`);
+  if (o.fast) p.push(`--compile`);
+  if (o.gpu_id) p.push(`-g ${o.gpu_id}`);
+  $("#cli").textContent = p.join(" ");
+}
+
+function updateStart() {
+  $("#inputVal").textContent = state.videos.length ? state.videos.length+" clip"+(state.videos.length>1?"s":"") : "Choose video(s)…";
+  $("#inputVal").classList.toggle("empty", !state.videos.length);
+  const ready = state.videos.some(v => v.path) && !state.processing;
+  $("#btnStart").disabled = !ready;
+}
+
+function setStatus(text, cls) { const el = $("#status"); el.textContent = text; el.className = "status mono" + (cls?(" "+cls):""); }
+
+function setToggle(id, value) { $(id).classList.toggle("on", !!value); }
+function setScale(value) {
+  const btn = document.querySelector(`#optScale button[data-s="${value}"]`);
+  if (!btn) return;
+  document.querySelectorAll("#optScale button").forEach(x => x.classList.remove("on"));
+  btn.classList.add("on");
+}
+function applySettings(s) {
+  if (s.model) $("#optModel").value = s.model;
+  if (s.scale) setScale(s.scale);
+  if (s.tile !== undefined) { $("#optTile").value = s.tile; $("#tileVal").textContent = +s.tile === 0 ? "Auto" : s.tile; }
+  if (s.denoise !== undefined) { $("#optDenoise").value = s.denoise; $("#denoiseVal").textContent = (+s.denoise).toFixed(2); }
+  if (s.gpu_id !== undefined) $("#optGpu").value = s.gpu_id;
+  if (s.output_format) $("#optFormat").value = s.output_format;
+  if (s.suffix !== undefined) $("#optSuffix").value = s.suffix;
+  if (s.temp_frames_dir) $("#optTemp").value = s.temp_frames_dir;
+  if (s.out_frames_dir) $("#optOut").value = s.out_frames_dir;
+  if (s.output_dir) { state.outputDir = s.output_dir; $("#outputVal").textContent = s.output_dir; $("#outputVal").classList.remove("empty"); }
+  setToggle("#tFace", s.face_enhance);
+  setToggle("#tFp32", s.fp32);
+  setToggle("#tFast", s.fast);
+  setToggle("#tDenoise", s.denoise_temporal);
+  setToggle("#tDeflicker", s.deflicker);
+  setToggle("#tAudio", s.include_audio !== false);
+  setToggle("#tCleanup", s.cleanup !== false);
+  if (s.model_path) {
+    state.customModel = { path: s.model_path, name: s.model_path.split(/[\\/]/).pop() };
+    $("#customName").textContent = "· " + state.customModel.name;
+  }
+}
+function saveSettings() {
+  const settings = gatherOptions();
+  localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+  const a = api();
+  if (a?.save_settings) a.save_settings(settings);
+}
+async function loadSettings() {
+  let s = {};
+  try { s = JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}"); } catch {}
+  const a = api();
+  if (a?.load_settings) s = Object.assign(s, await a.load_settings());
+  applySettings(s);
+}
+
+async function start() {
+  const a = api(); if (!a) return;
+  if (!state.outputDir) await initDefaults();
+  const jobs = state.videos.filter(v => v.path && v.status!=="done").map(v => ({ id: v.id, input: v.path }));
+  if (!jobs.length) { setStatus("Nothing to process", "error"); return; }
+  state.processing = true; state.cancelling = false; state.batchIds = new Set(jobs.map(j => j.id));
+  clearLog();
+  state.videos.forEach(v => { if (state.batchIds.has(v.id)) { v.status="processing"; v.progress=0; v.stage="queued"; } });
+  $("#btnStart").style.display="none"; $("#btnStop").style.display="inline-block";
+  setStatus("Processing "+jobs.length+" clip"+(jobs.length>1?"s":"")+"…", "");
+  renderBin();
+  await a.start_batch({ jobs, options: gatherOptions() });
+}
+async function stop() { const a = api(); if (a) { state.cancelling = true; await a.cancel(); } setStatus("Stopping…",""); }
+$("#btnStart").onclick = start; $("#btnStop").onclick = stop;
+
+function endBatch() {
+  state.processing = false; $("#btnStart").style.display="inline-block"; $("#btnStop").style.display="none";
+  updateStart();
+  if (state.cancelling) { setStatus("Stopped", ""); state.cancelling=false; return; }
+  const inB = state.videos.filter(v => state.batchIds.has(v.id));
+  const done = inB.filter(v => v.status==="done").length, err = inB.filter(v => v.status==="error").length;
+  setStatus(err ? `${done} done, ${err} failed` : `${done} clip${done!==1?"s":""} upscaled`, err ? (done?"":"error") : "ok");
+}
+function activeRemaining() { return state.videos.some(v => v.status==="processing"); }
+
+/* ---------- events from Python ---------- */
+window.onProgress = (e) => {
+  const v = state.videos.find(x => x.id===e.jobId); if (!v) return;
+  v.status = "processing"; if (typeof e.progress==="number") v.progress = e.progress; if (e.stage) v.stage = e.stage;
+  renderBin();
+};
+window.onDone = (e) => {
+  const v = state.videos.find(x => x.id===e.jobId); if (v) { v.status="done"; v.progress=100; v.outputUrl=e.outputUrl; v.output=e.output; }
+  if (v && v.id===state.selectedId) { setVideoSrc(vUpsc, v.outputUrl); syncUpscaledTime(); renderPlayer(); }
+  renderBin(); if (!activeRemaining()) endBatch();
+};
+window.onError = (e) => {
+  const v = state.videos.find(x => x.id===e.jobId);
+  if (v) {
+    if (e.cancelled || state.cancelling) { v.status="queued"; v.progress=0; v.stage=""; }
+    else { v.status="error"; v.error = e.error; }
+  }
+  if (!e.cancelled && !state.cancelling) toggleLog(true);  // surface the log on a real failure
+  renderBin(); if (!activeRemaining()) endBatch();
+};
+
+/* ---------- log console ---------- */
+window.onLog = (e) => appendLog(e.line);
+window.addDroppedVideos = (items) => { addVideos(items); setStatus("Added "+items.length+" clip"+(items.length!==1?"s":""), "ok"); };
+window.onStatus = (e) => setStatus(e.text || "", e.className || "");
+let logOpen = false, logLines = [];
+function appendLog(line) {
+  logLines.push(line);
+  if (logLines.length > 800) logLines = logLines.slice(-800);
+  const b = $("#logbody"); b.textContent = logLines.join("\n"); b.scrollTop = b.scrollHeight;
+}
+function clearLog() { logLines = []; $("#logbody").textContent = ""; }
+function toggleLog(force) {
+  logOpen = (force === undefined) ? !logOpen : force;
+  $("#logwrap").classList.toggle("open", logOpen);
+  $("#logbar").firstElementChild.textContent = logOpen ? "▾ Logs" : "▸ Logs";
+}
+async function copyLog(e) {
+  e.stopPropagation();
+  const text = logLines.join("\n");
+  if (!text) return;
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+    } else {
+      throw new Error("clipboard unavailable");
+    }
+    setStatus("Logs copied", "ok");
+  } catch {
+    const b = $("#logbody");
+    toggleLog(true);
+    const r = document.createRange();
+    r.selectNodeContents(b);
+    const s = window.getSelection();
+    s.removeAllRanges();
+    s.addRange(r);
+    setStatus("Logs selected", "ok");
+  }
+}
+
+async function initDefaults() {
+  const a = api(); if (!a || state.outputDir) return;
+  const p = await a.default_output_dir();
+  if (p) {
+    state.outputDir = p;
+    $("#outputVal").textContent = p;
+    $("#outputVal").classList.remove("empty");
+    updateStart();
+    saveSettings();
+  }
+}
+
+/* ---------- init ---------- */
+// Prevent WebView2/the window from navigating to a file dropped anywhere outside the bin.
+window.addEventListener("dragover", (e) => e.preventDefault());
+window.addEventListener("drop", (e) => e.preventDefault());
+document.querySelectorAll(".modes button").forEach(b => b.onclick = () => setMode(b.dataset.mode));
+$("#logbar").onclick = () => toggleLog();
+$("#copyLog").onclick = copyLog;
+async function boot() {
+  await loadSettings();
+  $("#denoiseRow").style.opacity = $("#optModel").value==="realesr-general-x4v3" ? "1":".4";
+  await initDefaults();
+  updateCli(); renderBin(); renderPlayer(); updateStart();
+}
+window.addEventListener("pywebviewready", boot);
+boot();
+</script>
+</body>
+</html>

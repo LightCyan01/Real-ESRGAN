@@ -6,8 +6,11 @@ tb_logger/*
 wandb/*
 tmp/*
 weights/*
-
-version.py
+.venv/
+.serena/
+complete/
+inputs/
+results_*/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

@@ -1,0 +1,39 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "realesrgan"
+version = "0.3.0"
+description = "Real-ESRGAN: Practical Algorithms for General Image/Video Restoration"
+readme = "README.md"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    "torch",
+    "torchvision",
+    "numpy<2",
+    "opencv-python",
+    "Pillow",
+    "tqdm",
+    "basicsr>=1.4.2",
+    "facexlib>=0.2.5",
+    "gfpgan>=1.3.5",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["realesrgan"]
+
+# Route torch/torchvision to the CUDA wheel index (RTX 4090 = CUDA 12.x).
+# Use the newest CUDA index pytorch.org publishes; cu126 shown, cu128 is also valid.
+[[tool.uv.index]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
+explicit = true
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cu126", marker = "sys_platform == 'win32' or sys_platform == 'linux'" }]
+torchvision = [{ index = "pytorch-cu126", marker = "sys_platform == 'win32' or sys_platform == 'linux'" }]
+
+# basicsr/facexlib/gfpgan import torch in their setup.py -> build isolation must be off.
+[tool.uv]
+no-build-isolation-package = ["basicsr", "facexlib", "gfpgan"]

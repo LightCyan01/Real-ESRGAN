@@ -11,6 +11,19 @@ from torch.nn import functional as F
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
+def _load_checkpoint(path, loc='cpu'):
+    """Load a checkpoint across torch versions. PyTorch 2.6+ defaults
+    weights_only=True; built-in Real-ESRGAN weights load fine under it. Community
+    pickled .pth may need weights_only=False — retry with a clear warning, since
+    that path can execute arbitrary code from untrusted files."""
+    try:
+        return torch.load(path, map_location=loc, weights_only=True)
+    except Exception as e:  # noqa: BLE001 - torch raises several types here
+        print(f'WARNING: secure (weights_only) load failed for {path}: {e}\n'
+              f'         Retrying with weights_only=False — only do this for files you trust.')
+        return torch.load(path, map_location=loc, weights_only=False)
+
+
 class RealESRGANer():
     """A helper class for upsampling images with RealESRGAN.
 
@@ -36,7 +49,12 @@ class RealESRGANer():
                  pre_pad=10,
                  half=False,
                  device=None,
-                 gpu_id=None):
+                 gpu_id=None,
+                 cudnn_benchmark=False,
+                 channels_last=False,
+                 use_compile=False,
+                 compile_mode='default',
+                 model_loaded=False):
         self.scale = scale
         self.tile_size = tile
         self.tile_pad = tile_pad
@@ -51,36 +69,49 @@ class RealESRGANer():
         else:
             self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu') if device is None else device
 
-        if isinstance(model_path, list):
-            # dni
-            assert len(model_path) == len(dni_weight), 'model_path and dni_weight should have the save length.'
-            loadnet = self.dni(model_path[0], model_path[1], dni_weight)
-        else:
-            # if the model_path starts with https, it will first download models to the folder: weights
-            if model_path.startswith('https://'):
-                model_path = load_file_from_url(
-                    url=model_path, model_dir=os.path.join(ROOT_DIR, 'weights'), progress=True, file_name=None)
-            loadnet = torch.load(model_path, map_location=torch.device('cpu'))
+        if not model_loaded:
+            if isinstance(model_path, list):
+                # dni
+                assert len(model_path) == len(dni_weight), 'model_path and dni_weight should have the save length.'
+                loadnet = self.dni(model_path[0], model_path[1], dni_weight)
+            else:
+                # if the model_path starts with https, it will first download models to the folder: weights
+                if model_path.startswith('https://'):
+                    model_path = load_file_from_url(
+                        url=model_path, model_dir=os.path.join(ROOT_DIR, 'weights'), progress=True, file_name=None)
+                loadnet = _load_checkpoint(model_path)
 
-        # prefer to use params_ema
-        if 'params_ema' in loadnet:
-            keyname = 'params_ema'
-        else:
-            keyname = 'params'
-        model.load_state_dict(loadnet[keyname], strict=True)
+            # prefer to use params_ema
+            if 'params_ema' in loadnet:
+                keyname = 'params_ema'
+            else:
+                keyname = 'params'
+            model.load_state_dict(loadnet[keyname], strict=True)
 
         model.eval()
         self.model = model.to(self.device)
         if self.half:
             self.model = self.model.half()
 
+        # ---- opt-in fixed-shape acceleration (default off => behavior unchanged) ----
+        self.channels_last = channels_last
+        if cudnn_benchmark:
+            # Autotunes conv algorithms; a pure win only when input shape is stable
+            # (e.g. a folder of same-size frames). Algorithm choice only -> bit-identical.
+            torch.backends.cudnn.benchmark = True
+        if self.channels_last:
+            self.model = self.model.to(memory_format=torch.channels_last)
+        if use_compile:
+            # reduce-overhead = CUDA graphs (best for fixed-size frames); 'default' otherwise
+            self.model = torch.compile(self.model, mode=compile_mode)
+
     def dni(self, net_a, net_b, dni_weight, key='params', loc='cpu'):
         """Deep network interpolation.
 
         ``Paper: Deep Network Interpolation for Continuous Imagery Effect Transition``
         """
-        net_a = torch.load(net_a, map_location=torch.device(loc))
-        net_b = torch.load(net_b, map_location=torch.device(loc))
+        net_a = _load_checkpoint(net_a, loc)
+        net_b = _load_checkpoint(net_b, loc)
         for k, v_a in net_a[key].items():
             net_a[key][k] = dni_weight[0] * v_a + dni_weight[1] * net_b[key][k]
         return net_a
@@ -92,6 +123,9 @@ class RealESRGANer():
         self.img = img.unsqueeze(0).to(self.device)
         if self.half:
             self.img = self.img.half()
+
+        if getattr(self, 'channels_last', False):
+            self.img = self.img.contiguous(memory_format=torch.channels_last)
 
         # pre_pad
         if self.pre_pad != 0:
@@ -113,6 +147,18 @@ class RealESRGANer():
     def process(self):
         # model inference
         self.output = self.model(self.img)
+
+    @torch.no_grad()
+    def warmup(self, h, w):
+        """Run one dummy forward at (h, w) so torch.compile graph build and cuDNN
+        autotuning happen once here, not on the first real frame. Also surfaces any
+        compile error early."""
+        dummy = np.zeros((h, w, 3), dtype=np.float32)
+        self.pre_process(dummy)
+        if self.tile_size > 0:
+            self.tile_process()
+        else:
+            self.process()
 
     def tile_process(self):
         """It will first crop input images to tiles, and then process each tile.

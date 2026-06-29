@@ -1,4 +1,5 @@
 import argparse
+import realesrgan._compat  # noqa: F401,E402  MUST precede the basicsr import below
 import cv2
 import glob
 import mimetypes
